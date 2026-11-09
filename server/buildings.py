@@ -1863,6 +1863,9 @@ def _part_heights(a, i):
 ROAD_THROUGH_M = 15.0       # a footprint that public roads run through this far is a structure over them
 OVER_ROAD_CLEAR_M = 5.5     # ... lifted this high (an expressway's or a station's slab over the streets: Baltimore's
                             # 17,500 m2 one by I-83, the AI drove into its wall at 35 mph, 2026-10-14)
+LEVEL_THROUGH_M = 5.0       # ... this far for one mapped over the ground (OSM layer >= 1, Overture's level): Noranda Station's
+                            # concourse over Tonkin Highway in Perth (layer 1, no min_height), 80 x 118 m over the platforms
+                            # in the median and 6 m of one carriageway, stood as a wall across its lanes (GitHub #914)
 SITE_M2 = 100_000.0         # m2: a footprint this large that public roads run through (ROAD_THROUGH_M) is a mapped site
                             # (a planned development, a campus outline tagged building), not a structure over them: left
                             # out, not lifted (the largest decks over roads are a few hectares; OSM's 1.35 km2 "Blueberry
@@ -2019,10 +2022,19 @@ OVER_TUNNEL_CLEAR_M = 7.5   # (the tube's vault is roadmesh.TUNNEL_H = 6.8 m ove
                             # east portal building closed the tunnel)
 
 
+class RoadLines(list):
+    """road_lines' polylines, a list as before, with .half: each line's drawn half-width (m; roads.road_specs' rural
+    width / 2, None where it has no spec): _ml_false's on-the-lanes test."""
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.half = []
+
+
 def road_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
-    """Polylines (k, 2) relative to (x0, y0) of the public roads on the ground near the tile (for road_through)."""
+    """Polylines (k, 2) relative to (x0, y0) of the public roads on the ground near the tile (for road_through), a
+    RoadLines (their drawn half-widths in .half)."""
     import roads as roadsmod
-    out = []
+    out = RoadLines()
     for f in road_layers:
         if f is None or len(f.kind) == 0:
             continue
@@ -2032,9 +2044,14 @@ def road_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
         bb = f.boxes(frame)             # (only the roads near the tile: the test below, all at once)
         near = np.flatnonzero((bb[:, 2] - x0 >= -margin) & (bb[:, 0] - x0 <= size + margin)
                               & (bb[:, 3] - y0 >= -margin) & (bb[:, 1] - y0 <= size + margin))
+        specs = None
         for i in near.tolist():
             if str(cls[i]) not in THROUGH_CLASSES:
                 continue
+            if specs is None:
+                specs = roadsmod.road_specs(f)      # (remembered on the layer: the road tiles ask for them anyway)
+            sp = specs[i] if i < len(specs) else None
+            half = float(sp.width) / 2 if sp is not None and np.isfinite(sp.width) and sp.width > 0 else None
             if roadsmod.level_ranges(f, i):
                 # its pieces on the ground (a motorway segment with a short overpass in it was left out whole, and the
                 # lorries machine-learned as buildings on its lanes stayed: the A7, GitHub #239; PR #71's finding)
@@ -2052,6 +2069,7 @@ def road_lines(frame, road_layers, x0, y0, margin=50.0, size=256.0):
                         or xy[:, 1].min() > size + margin:
                     continue
                 out.append(xy)
+                out.half.append(half)
     return out
 
 
@@ -2177,6 +2195,11 @@ def _passages(rings, attrs, looks, mins, bridges_xy, decks=None, ground_at=None)
 
 ML_BRIDGE_M = 6.0          # m of a road bridge's line through a machine-learned footprint: the deck, not a building
 ML_ROAD_M = 4.0            # m from a public road's centre line to a machine-learned footprint's centre: a vehicle on it
+                           # (at least; where the road's drawn width is known, ML_ROAD_EDGE_M past its half-width)
+ML_ROAD_EDGE_M = 1.0       # m past a road's drawn edge a machine-learned footprint's centre still counts as on its lanes
+                           # (I-280 at Cupertino, 2026-11-08: Overture aed44c00-..., Microsoft's 8 x 30 m outline of a
+                           # lorry, height 0.73 m, 7.0 m from the centre line of a 5-lane, 26 m wide carriageway stood as a
+                           # house in the fast lane: ML_ROAD_M alone covered its middle two lanes)
 ML_MEDIAN_M = 9.0          # m: a machine-learned footprint between two parallel roads this close on either side lies in a
                            # dual carriageway's median (GitHub #90: a house between Moscow's Bolshaya Tulskaya carriageways)
 
@@ -2191,6 +2214,21 @@ def _line_dist(p, lines):
         q = a + t[:, None] * d
         best = min(best, float(np.hypot(*(q - p).T).min()))
     return best
+
+
+def _on_lanes(c, roads_xy):
+    """Does point c (2,) lie on a public road's drawn surface: within its half-width + ML_ROAD_EDGE_M of its centre
+    line (roads_xy.half, road_lines), and within ML_ROAD_M of any (a plain list without widths: that alone)?"""
+    halves = getattr(roads_xy, "half", None)
+    for k, ln in enumerate(roads_xy):
+        h = halves[k] if halves is not None and k < len(halves) else None
+        reach = max(ML_ROAD_M, h + ML_ROAD_EDGE_M) if h is not None else ML_ROAD_M
+        if len(ln) < 2 or ln[:, 0].min() > c[0] + reach or ln[:, 0].max() < c[0] - reach or \
+                ln[:, 1].min() > c[1] + reach or ln[:, 1].max() < c[1] - reach:
+            continue
+        if _line_dist(c, [ln]) <= reach:
+            return True
+    return False
 
 
 def _nearest_on(p, ln):
@@ -2226,11 +2264,11 @@ def _in_median(c, roads_xy):
 def _ml_false(ring, bridges_xy, water_xy, roads_xy=None):
     """A machine-learned footprint (Microsoft's, Google's) that is a bridge deck, a boat or a vehicle: a road bridge
     runs through it, its centre lies on mapped water (Tower Bridge's river: barges as brick buildings, 2026-10-18), on
-    a public road (a lorry on a Norwegian trunk road stood as a white building over the lanes, GitHub #2) or in a dual
-    carriageway's median (_in_median, GitHub #90)."""
+    a public road's lanes (_on_lanes: a lorry on a Norwegian trunk road stood as a white building over the lanes,
+    GitHub #2; one in I-280's fast lane, ML_ROAD_EDGE_M) or in a dual carriageway's median (_in_median, GitHub #90)."""
     if bridges_xy and road_through(ring, bridges_xy) >= ML_BRIDGE_M:
         return True
-    if roads_xy and (_line_dist(ring.mean(0), roads_xy) <= ML_ROAD_M or _in_median(ring.mean(0), roads_xy)):
+    if roads_xy and (_on_lanes(ring.mean(0), roads_xy) or _in_median(ring.mean(0), roads_xy)):
         return True
     if water_xy:
         from polygon import Path
@@ -2717,7 +2755,9 @@ def tile_buildings(frame, x0, y0, x1, y1, layers, elev, water=None, part_layers=
             if mh <= 0.5 and roads_xy and _area2(ring) / 2 >= SITE_M2 and road_through(ring, roads_xy) >= ROAD_THROUGH_M:
                 continue                # a mapped site, not a building (SITE_M2)
             rings.append(ring)
-            if mh <= 0.5 and roads_xy and (road_through(ring, roads_xy) >= ROAD_THROUGH_M or road_across(ring, roads_xy)):
+            lv_ = a["level"][i] if a.get("level") is not None else None
+            through_m = ROAD_THROUGH_M if lv_ is None or not np.isfinite(lv_) or lv_ < 1 else LEVEL_THROUGH_M
+            if mh <= 0.5 and roads_xy and (road_through(ring, roads_xy) >= through_m or road_across(ring, roads_xy)):
                 mh = OVER_ROAD_CLEAR_M
                 h = at.get("height")
                 if h is None or not np.isfinite(h) or h < mh + 3.0:
@@ -3959,6 +3999,14 @@ BRIDGE_MIN_SPAN_M = 100.0  # ... and only once it also reaches this far (a narro
 FAR_LAYERS = ("buildings", "building_parts", "infrastructure", "roads", "water")
 
 
+def far_needs(frame, tile, ty):
+    """The map cells and layers far_items reads for road tile (tile, ty) (blockworker: fetched together first)."""
+    import roads
+    box = roads.tile_bbox(tile, ty)
+    house_layers = ("land_use",) if francehouses.needs_residential_land(frame, box) else ()
+    return list(roads.cells_of_tile(frame, tile, ty, margin=0.0)), FAR_LAYERS + house_layers
+
+
 def far_items(frame, tile, ty, md, ground, lamp_region=None):
     """The far (lite) buildings of road tile (tile, ty) (an anchor tile, or a geotile: tile a geotiles.GeoBox, ty None:
     its own buildings, those the road geotile of the same key holds) in frame: (items, lamps [[x, y, z], ...] of its
@@ -3967,8 +4015,8 @@ def far_items(frame, tile, ty, md, ground, lamp_region=None):
     box = roads.tile_bbox(tile, ty)
     x0, y0, x1, y1 = box
     own = box if hasattr(box, "owns") else None
-    house_layers = ("land_use",) if francehouses.needs_residential_land(frame, box) else ()
-    cds = [md.cell(k, layers=FAR_LAYERS + house_layers, kind="demand") for k in roads.cells_of_tile(frame, tile, ty, margin=0.0)]
+    keys, layers = far_needs(frame, tile, ty)
+    cds = [md.cell(k, layers=layers, kind="demand") for k in keys]
     items = tile_buildings(frame, x0, y0, x1, y1, [c.layers.get("buildings") for c in cds], ground, own=own,
                            part_layers=[c.layers.get("building_parts") for c in cds],
                            house_land_layers=[c.layers.get("land_use") for c in cds],
@@ -4211,8 +4259,9 @@ def sky_items(frame, box, keys, md, ground, lamp_region=None, own=None):
     x0, y0, x1, y1 = box
     # (and the roads: their street lamps, far_lamps)
     if not all(md.has(k, "buildings") and md.has(k, "roads") for k in keys):
-        for k in keys:                      # (the background lane: never before what the player is near)
-            md.prefetch(k, layers=("buildings", "roads"))
+        # (the background lane: never before what the player is near; in the map data's own threads, all at once: one
+        # after another in the one far process they held the far buildings back, 2026-11-07)
+        md.warm([(k, layer) for k in keys for layer in ("buildings", "roads")], kind="prefetch")
         return None
     cds = [md.cell(k, layers=("buildings", "roads"), kind="background") for k in keys]
     layers = [c.layers.get("buildings") for c in cds]

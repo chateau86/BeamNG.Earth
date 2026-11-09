@@ -77,6 +77,11 @@ US_MOTORWAY_MPH = {
 # names: maplayers.js) within CITY_KM: the road specs' `urban` (built up along the road: sidewalks, parking) took I-94
 # past Huntley MT (a few hundred people) for a city's interstate, 65 where the state's limit is 80 outside its
 # urbanized areas (Billings, rank 4).
+# ... and the other fast classes outside towns, where no limit is mapped: the rural limit most states set for a two-lane
+# highway by statute (55 mph; Texas 70 on its numbered highways, FM roads among them, 60 on the others), not the town
+# speeds of DRIVE: a farm-to-market road in Texas was driven at 30-35 where it is 55-70 (GitHub #888). Not unclassified
+# and below (county and gravel roads vary too much); a road built up along it (spec.urban) keeps URBAN_MPH_CAP.
+US_RURAL_MPH = {"trunk": 65, "primary": 55, "secondary": 55, "tertiary": 45}
 CITY_RANK = 6
 CITY_KM = 12.0
 _state_memo = {}
@@ -155,6 +160,8 @@ def road_mph(feats, i, spec, mph=True, at=0.5, country=None):
         state, city = _us_place(feats, i)
         if state in US_MOTORWAY_MPH:
             return float(US_MOTORWAY_MPH[state][1 if spec.urban and city else 0])
+    if country == "US" and not spec.urban and spec.cls in US_RURAL_MPH and not getattr(spec, "link", False):
+        return float(US_RURAL_MPH[spec.cls])
     if country == "SE" and spec.cls == "motorway":
         return 110.0 / 1.609344
     if country == "SE" and spec.cls in SE_ROADS:
@@ -282,6 +289,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
     approaches = {}         # (connector, fid, end) -> (graph node next to it, traffic comes in)
     pending = {}            # name -> (x, y) of nodes whose z is still to sample
     node_fid = {}           # name -> the feature it was made on (its deck, if any)
+    deck_centres = {}       # original centreline point for deck/tunnel height lookup
     pending_by = {}         # name -> (-width, fid) of the road whose point it is (the widest's, then the lower id)
     # the stretches through tunnels, left out of the graph (no ground there for the AI), for the minimap only
     # (minimaproads.lua: its lines broke at every tunnel and every underpass mapped as one; the user, 2026-11-04)
@@ -401,6 +409,10 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                         full.append(sj)
             full.append(order[-1])
             xy = np.stack([np.interp(full, s, p[:, 0]), np.interp(full, s, p[:, 1])], 1)
+            deck_xy = xy.copy()
+            offset = roads.driving_offset(spec)
+            if abs(offset) > 1e-6:
+                xy = roads.offset_polyline(np.c_[xy, np.zeros(len(xy))], offset)[:, :2]
             names = [marks[v] for v in full]
             # this road's edge attributes
             mid = 0.5
@@ -440,7 +452,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                 in_tunnel = False
                 if tunnel_ranges and any(t0 <= (full[j] + full[j + 1]) / (2 * L) <= t1 for t0, t1 in tunnel_ranges):
                     # each end inside the tunnel on its built floor (an end past a portal is on the ground)
-                    ends_in = [(nm_, q_) for nm_, q_, at_ in ((a, xy[j], full[j]), (b, xy[j + 1], full[j + 1]))
+                    ends_in = [(nm_, q_) for nm_, q_, at_ in ((a, deck_xy[j], full[j]), (b, deck_xy[j + 1], full[j + 1]))
                                if any(t0 * L < at_ < t1 * L for t0, t1 in tunnel_ranges)]
                     if AI_TUNNELS and tunnels and fid in tunnels and w >= TUNNEL_AI_MIN_W and all(
                             _deck_z(tunnels, fid, float(q_[0]), float(q_[1])) is not None for _, q_ in ends_in):
@@ -454,7 +466,8 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                 if direction < 0:
                     a, b = b, a
                 pa, pb = xy[j] if direction >= 0 else xy[j + 1], xy[j + 1] if direction >= 0 else xy[j]
-                for nm, q in ((a, pa), (b, pb)):
+                for nm, q, dk in ((a, pa, j if direction >= 0 else j + 1),
+                                  (b, pb, j + 1 if direction >= 0 else j)):
                     # a connector the map's lines reach at different points (a ramp's end 3.3 m off the motorway's
                     # joint, I-83 in Baltimore: the AI's lanes stood 3 m east of the drawn ones, their edge on the
                     # parapet, 2026-10-29) stands where the widest road's line reaches it (then the lower id): not
@@ -463,6 +476,7 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
                     if nm not in nodes and (old is None or (-w, fid) < old):
                         pending[nm] = (float(q[0]), float(q[1]))
                         node_fid[nm] = fid
+                        deck_centres[nm] = deck_xy[dk]
                         pending_by[nm] = (-w, fid)
                 legal = road_mph(feats, i, spec, mph, at=(full[j] + full[j + 1]) / (2 * L), country=country) * MPH
                 target = min(legal, float(profile[j]), float(profile[j + 1]))
@@ -530,13 +544,13 @@ def build(frame, feats_list, elev, centre, urban_fn=None, window=WINDOW_M, decks
         Z = np.asarray(frame.geodetic_to_enu(la, lo, np.asarray(elev(la, lo), np.float64))[2], np.float64).copy()
         if decks:
             for k, nm in enumerate(used):
-                dz = _deck_z(decks, node_fid.get(nm), X[k], Y[k])
+                dz = _deck_z(decks, node_fid.get(nm), *deck_centres.get(nm, (X[k], Y[k])))
                 if dz is not None:
                     Z[k] = dz
         if tunnel_node:
             for k, nm in enumerate(used):
                 if nm in tunnel_node:
-                    tz = _deck_z(tunnels, tunnel_node[nm], X[k], Y[k])
+                    tz = _deck_z(tunnels, tunnel_node[nm], *deck_centres.get(nm, (X[k], Y[k])))
                     if tz is not None:
                         Z[k] = tz
         radius = {}
@@ -740,13 +754,28 @@ def road_rules(country):
             "country": c, "mph": c in MPH_COUNTRIES}
 
 
+_NEAREST = {}       # (id(db), lat, lon) -> (db, runway index): geo_rules asks country_near then region_near there
+
+
+def _nearest_runway(db, lat, lon):
+    """The index of the runway nearest (lat, lon) in db (airports._hav's first minimum), the last few remembered."""
+    k = (id(db), float(lat), float(lon))
+    hit = _NEAREST.get(k)
+    if hit is not None and hit[0] is db:
+        return hit[1]
+    import airports
+    i = int(np.argmin(airports._hav(lat, lon, db._mid[:, 0], db._mid[:, 1])))
+    if len(_NEAREST) > 64:
+        _NEAREST.clear()
+    _NEAREST[k] = (db, i)
+    return i
+
+
 def country_near(db, lat, lon):
     """The country of the airport nearest (lat, lon) in airports.AirportDB db, or None."""
     if db is None or not getattr(db, "runways", None):
         return None
-    import airports
-    d = airports._hav(lat, lon, db._mid[:, 0], db._mid[:, 1])
-    rw = db.runways[int(np.argmin(d))]
+    rw = db.runways[_nearest_runway(db, lat, lon)]
     ap = db.airports.get(rw.airport_ident)
     return getattr(ap, "country", None) or getattr(rw, "country", None) or None
 
@@ -755,9 +784,7 @@ def region_near(db, lat, lon):
     """The ISO 3166-2 region (e.g. "US-CA") of the airport nearest (lat, lon) in airports.AirportDB db, or None."""
     if db is None or not getattr(db, "runways", None):
         return None
-    import airports
-    d = airports._hav(lat, lon, db._mid[:, 0], db._mid[:, 1])
-    ap = db.airports.get(db.runways[int(np.argmin(d))].airport_ident)
+    ap = db.airports.get(db.runways[_nearest_runway(db, lat, lon)].airport_ident)
     return getattr(ap, "region", None) or None
 
 

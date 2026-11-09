@@ -111,9 +111,10 @@ LAYER_VERSIONS = {"roads": 9}
                                 # (2: clipped polygon pieces `own`ed by their cell, exact cell edges,
                                 # the exact no-area test of clipped rings)
 VECTOR_LAYERS = ("roads", "connectors", "buildings", "water", "land_use", "infrastructure", "building_parts", "places",
-                 "road_routes", "town_areas", "town_points")
+                 "road_routes", "town_areas", "town_points", "hoods")
 RASTER_LAYERS = ("landcover", "canopy")
-OPTIONAL_LAYERS = ("building_parts", "places", "road_routes", "town_areas", "town_points")   # built only when asked for by name (buildings.py,
+OPTIONAL_LAYERS = ("building_parts", "places", "road_routes", "town_areas", "town_points",
+                   "hoods")   # built only when asked for by name (buildings.py,
                                                                     # gasstations.py, dirsigns.py, townentry.py)
 LAYERS = tuple(x for x in VECTOR_LAYERS if x not in OPTIONAL_LAYERS) + RASTER_LAYERS
 ALL_LAYERS = VECTOR_LAYERS + RASTER_LAYERS
@@ -836,6 +837,9 @@ class MapData:
         with self._mem_lock:
             self._mem.clear()
             self._mem_bytes = 0
+        for tags in (self.rail_tags, self.lane_tags):       # (the OSM tag shards: ~20 MB each)
+            if tags is not None:
+                tags.clear_memory()
 
     def _remember(self, k, entry):
         """Keep a decoded layer for the next cell() of it (at most MEM_MB in all, least recently used out)."""

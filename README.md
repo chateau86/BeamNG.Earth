@@ -23,7 +23,7 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   Europe, the US and more; in Canada the distant terrain lined up with NRCan's HRDEM lidar ground),
   Copernicus 30 m elsewhere with buildings and small tree stands filtered out of it.
 - Aerial and satellite imagery on the ground: open state and national orthophotos (Maryland's 15 cm photos,
-  a dozen more US states, NAIP across the US, Switzerland, France, Spain, the Netherlands, Germany's states,
+  a dozen more US states, NAIP across the US, Switzerland, France, Portugal, Spain, the Netherlands, Germany's states,
   Austria, Poland, Czechia, Japan, parts of Australia and Canada, and more), Sentinel-2 cloudless everywhere else; shadows and
   colour seams taken out of the photos, the season's colours graded in, cliffs drawn as rock.
 - A real view distance out to the horizon, with the Earth's curvature.
@@ -155,6 +155,12 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   addresses on Enter, in any language, or ask for "highest bridge in Switzerland", teleport anywhere. Works with a controller,
   laid out like the stock map. Layers > **Highways** (off by default) draws the US Interstates and US routes with their
   shields while zoomed out, so you can see which highways a GPS route takes (closer in, Roads & labels shows every road).
+- **3D map** (experimental): a Google Earth style view in the game itself. Fly up from your car to see the whole
+  globe with its photos, search for places, pick a spot with a click, set a GPS route or teleport there; its compass
+  needle turns with the view. The map key opens the 2D or 3D map, whichever you used last, and each has a button for
+  the other. Any camera more than about 150 miles up sees the Earth as a globe too.
+- **Altitude** HUD app (in the BeamNG.Earth layout; add it to others from the apps menu): height above sea level and
+  above the ground, and how fast you climb or fall.
 - GPS routes to any destination (OSRM on OpenStreetMap), with the stock route arrows on the road and the route
   on the game's minimap (bottom left), which shows the roads around you. The first 20 km (12 miles) of the
   route's map data and elevation download ahead while you drive, with a progress bar on the map (Settings >
@@ -236,6 +242,13 @@ You can help support development by reporting [issues](https://github.com/TecnaG
   with the downloaded app (.exe / AppImage), **Update now** downloads it next to your copy, checks it against
   GitHub's checksum, and the next time you start BeamNG.Earth the new version starts (your old file and shortcut
   keep working).
+- **Add-ons** settings page: mods and tools other people made for BeamNG.Earth (a short list we keep: for now
+  Worldwide Trucking Career: Dangerous Contracts and BeamNG.Earth Live GPS), each with its description and changelog
+  from its own GitHub page. Game mods install, update, turn off and on, and uninstall from the page, through the game's
+  own mod manager, after a notice naming the author (they are not made by BeamNG.Earth); each download comes from the
+  author's own GitHub releases and is checked against GitHub's checksum. Not while a BeamMP server is joined. Other
+  mods can use BeamNG.Earth through its modding API (`beamngEarth_api`), and programs beside the game can read your
+  position from `http://127.0.0.1:47615/v1/pose` (this computer only): see [docs/ADDONS.md](docs/ADDONS.md).
 
 ## How it works
 - A **companion server** (`server/`: Python, with its heavy work in a Rust module, `native/earthfast`) downloads
@@ -431,20 +444,25 @@ data> --procs 4`. It needs the same BeamNG.Earth version as the players and a fe
 To see how many people play and how hard we are pushing the free map-data services we rely on, the world server
 sends a small anonymous report every 5 minutes: a random install id (created on your machine; no name, account or
 hardware id), the app version and operating system, whether the game is connected, whether it is a BeamMP session,
-and how many requests went to each data source (with their errors and rate limits). No positions or places are sent.
+and how many requests went to each data source (with their errors and rate limits). With **Performance data** ticked
+it also sends the game's frame rate and hitches, how well the world keeps up, your CPU / GPU model and settings, and
+error codes. No positions or places are sent.
 The collector looks up your country from the connection's address and does not keep the address.
 
 The public numbers (players online, peaks, history, countries with at least 5 players) are at
-<https://earth.tgforever.net/players>.
+<https://earth.tgforever.net/players>, and the performance numbers (groups of at least 5 players) at
+<https://earth.tgforever.net/performance>.
 
-Turn reports off in the game: BeamNG.Earth's settings page, Interface, **Anonymous usage statistics** (from the next
-report on). Or set the environment variable `BNE_TELEMETRY=off` before starting BeamNG.Earth. Reports are never sent in
-offline mode (`--offline`).
+**Nothing is sent until you choose.** The welcome screen asks first, with a main switch and two parts (performance
+data, network load); how the boxes start depends on your computer's time zone (nothing ticked in the EU and some
+other places). Change it any time in BeamNG.Earth's settings page, Interface (from the next report on), or set the
+environment variable `BNE_TELEMETRY=off` before starting BeamNG.Earth. Reports are never sent in offline mode
+(`--offline`). Every field, why we want it and what happens to it: [TELEMETRY.md](TELEMETRY.md).
 
 ## Data sources and attribution
 The repository contains only code; all map data is downloaded at runtime and cached locally.
 - Imagery: state and national orthophoto services where they are open (Maryland, a dozen more US
-  states, Switzerland, France, Spain, the Netherlands, Germany's states, Poland (GUGiK), Japan, parts of Australia and
+  states, Switzerland, France, Portugal, Spain, the Netherlands, Germany's states, Poland (GUGiK), Japan, parts of Australia and
   Canada, and more), USDA NAIP and USGS The National Map (public domain) in the US, and Sentinel-2
   cloudless by EOX IT Services GmbH everywhere (https://s2maps.eu, contains modified Copernicus Sentinel
   data; 2016 release CC BY 4.0, 2023 release CC BY-NC-SA 4.0, non-commercial).
